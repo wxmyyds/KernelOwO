@@ -31,6 +31,107 @@ if [[ $VB_ENABLED == "false" ]]; then
     curl https://raw.githubusercontent.com/$BUILDER_REPO/refs/heads/$BUILDER_BRANCH/patches/initramfs_recovery.patch | git am
 fi
 
-# Apply ReSukiSU manual hooks
+# Apply ReSukiSU manual hooks via sed (more reliable than git am for CI)
 msg "Applying ReSukiSU manual hooks..."
-curl -s https://raw.githubusercontent.com/$BUILDER_REPO/refs/heads/$BUILDER_BRANCH/patches/ksu_hooks.patch | git am
+
+cd $KERNEL_DIR
+
+# fs/exec.c: ksu_handle_execveat
+sed -i '/^static int do_execveat_common/,/^}/{
+/^}$/a\
+#ifdef CONFIG_KSU_MANUAL_HOOK\
+__attribute__((hot))\
+extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\
+				void *argv, void *envp, int *flags);\
+#endif
+}' fs/exec.c
+
+sed -i '/^int do_execve(struct filename/,/^}/{
+/struct user_arg_ptr envp = { .ptr.native = __envp };$/a\
+#ifdef CONFIG_KSU_MANUAL_HOOK\
+	ksu_handle_execveat((int *)AT_FDCWD, \&filename, \&argv, \&envp, NULL);\
+#endif
+}' fs/exec.c
+
+sed -i '/^static int compat_do_execve/,/^}/{
+/\.ptr\.compat = __envp,$/a\
+#ifdef CONFIG_KSU_MANUAL_HOOK\
+	ksu_handle_execveat((int *)AT_FDCWD, \&filename, \&argv, \&envp, NULL);\
+#endif
+}' fs/exec.c
+
+# fs/stat.c: ksu_handle_stat, ksu_handle_newfstat_ret, ksu_handle_fstat64_ret
+sed -i '/^#if !defined(__ARCH_WANT_STAT64) || defined(__ARCH_WANT_SYS_NEWFSTATAT)$/i\
+#ifdef CONFIG_KSU_MANUAL_HOOK\
+__attribute__((hot))\
+extern int ksu_handle_stat(int *dfd, const char __user **filename_user,\
+				int *flags);\
+\
+extern void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf_ptr);\
+#if defined(__ARCH_WANT_STAT64) || defined(__ARCH_WANT_COMPAT_STAT64)\
+extern void ksu_handle_fstat64_ret(unsigned long *fd, struct stat64 __user **statbuf_ptr);\
+#endif\
+#endif
+' fs/stat.c
+
+sed -i '/^SYSCALL_DEFINE4(newfstatat, int, dfd,/,/^}/{
+/^	int error;/a\
+#ifdef CONFIG_KSU_MANUAL_HOOK\
+	ksu_handle_stat(\&dfd, \&filename, \&flag);\
+#endif
+}' fs/stat.c
+
+sed -i '/^SYSCALL_DEFINE2(newfstat, unsigned int, fd,/,/^}/{
+/^	return error;/i\
+#ifdef CONFIG_KSU_MANUAL_HOOK\
+	ksu_handle_newfstat_ret(\&fd, \&statbuf);\
+#endif
+}' fs/stat.c
+
+sed -i '/^SYSCALL_DEFINE4(fstatat64, int, dfd,/,/^}/{
+/^	int error;/a\
+#ifdef CONFIG_KSU_MANUAL_HOOK\
+	ksu_handle_stat(\&dfd, \&filename, \&flag);\
+#endif
+}' fs/stat.c
+
+sed -i '/^SYSCALL_DEFINE2(fstat64, unsigned long, fd,/,/^}/{
+/^	return error;/i\
+#ifdef CONFIG_KSU_MANUAL_HOOK\
+	ksu_handle_fstat64_ret(\&fd, \&statbuf);\
+#endif
+}' fs/stat.c
+
+# fs/open.c: ksu_handle_faccessat
+sed -i '/^SYSCALL_DEFINE4(fallocate/,/^}/{
+/^}$/a\
+\
+#ifdef CONFIG_KSU_MANUAL_HOOK\
+__attribute__((hot))\
+extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,\
+				int *mode, int *flags);\
+#endif
+}' fs/open.c
+
+sed -i '/^SYSCALL_DEFINE3(faccessat, int, dfd,/,/^}/{
+/^{$/a\
+#ifdef CONFIG_KSU_MANUAL_HOOK\
+	ksu_handle_faccessat(\&dfd, \&filename, \&mode, NULL);\
+#endif
+}' fs/open.c
+
+# kernel/reboot.c: ksu_handle_sys_reboot
+sed -i '/^SYSCALL_DEFINE4(reboot, int, magic1,/i\
+#ifdef CONFIG_KSU_MANUAL_HOOK\
+extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);\
+#endif
+' kernel/reboot.c
+
+sed -i '/^SYSCALL_DEFINE4(reboot, int, magic1,/,/^}/{
+/^	int ret = 0;/a\
+#ifdef CONFIG_KSU_MANUAL_HOOK\
+	ksu_handle_sys_reboot(magic1, magic2, cmd, \&arg);\
+#endif
+}' kernel/reboot.c
+
+msg "ReSukiSU manual hooks applied successfully"
