@@ -30,3 +30,7 @@ if [[ $VB_ENABLED == "false" ]]; then
     msg "NonVB"
     curl https://raw.githubusercontent.com/$BUILDER_REPO/refs/heads/$BUILDER_BRANCH/patches/initramfs_recovery.patch | git am
 fi
+
+# Apply ReSukiSU manual hooks
+msg "Applying ReSukiSU manual hooks..."
+curl -s https://raw.githubusercontent.com/$BUILDER_REPO/refs/heads/$BUILDER_BRANCH/patches/ksu_hooks.patch | git am
